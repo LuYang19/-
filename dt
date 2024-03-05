@@ -1,0 +1,256 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Feb 27 10:54:30 2024
+
+@author: Administrator
+"""
+
+import akshare as ak
+from MyTT import *
+import datetime
+import requests
+import json
+import operator
+import pandas as pd
+import time    
+import warnings
+warnings.filterwarnings("ignore")
+def send_markdown(text):
+    """发送富文本消息"""
+    url = f"https://open.feishu.cn/open-apis/bot/v2/hook/6a06297a-2e71-4ba4-8400-1177ae698f86"
+    headers = {"Content-Type": "text/plain"}
+    data = {
+    "msg_type": "interactive",
+    "card": {
+    "config": {
+        "wide_screen_mode": True
+    },
+    "header": {
+        "title": {
+            "tag": "plain_text",
+            "content": "触发龙虎榜建仓信号！！！"
+        },
+        "template":"red"
+    },
+    "elements": [{"tag": "div",
+                      "text": {"content":text,
+                      "tag": "lark_md"}}]}
+    } 
+    r = requests.post(url, headers=headers, json=data)
+    return r.text
+
+def stock_lhb_stock_statistic_em(symbol: str = "近六月") -> pd.DataFrame:
+    """
+    东方财富网-数据中心-龙虎榜单-个股上榜统计
+    https://data.eastmoney.com/stock/tradedetail.html
+    :param symbol: choice of {"近一月", "近三月", "近六月", "近一年"}
+    :type symbol: str
+    :return: 个股上榜统计
+    :rtype: pandas.DataFrame
+    """
+    symbol_map = {
+        "近一月": "01",
+        "近三月": "02",
+        "近六月": "03",
+        "近一年": "04",
+    }
+    url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    params = {
+        "sortColumns": "BILLBOARD_TIMES,LATEST_TDATE,SECURITY_CODE",
+        "sortTypes": "-1,-1,1",
+        "pageSize": "5000",
+        "pageNumber": "1",
+        "reportName": "RPT_BILLBOARD_TRADEALL",
+        "columns": "ALL",
+        "source": "WEB",
+        "client": "WEB",
+        "filter": f'(STATISTICS_CYCLE="{symbol_map[symbol]}")',
+    }
+    r = requests.get(url, params=params)
+    data_json = r.json()
+    temp_df = pd.DataFrame(data_json["result"]["data"])
+    temp_df.reset_index(inplace=True)
+    temp_df["index"] = temp_df.index + 1
+    temp_df.columns = [
+        "序号",
+        "-",
+        "代码",
+        "最近上榜日",
+        "名称",
+        "近1个月涨跌幅",
+        "近3个月涨跌幅",
+        "近6个月涨跌幅",
+        "近1年涨跌幅",
+        "涨跌幅",
+        "收盘价",
+        "-",
+        "龙虎榜总成交额",
+        "龙虎榜净买额",
+        "-",
+        "-",
+        "机构买入净额",
+        "上榜次数",
+        "龙虎榜买入额",
+        "龙虎榜卖出额",
+        "机构买入总额",
+        "机构卖出总额",
+        "买方机构次数",
+        "卖方机构次数",
+        "-",
+    ]
+    temp_df = temp_df[
+        [
+            "序号",
+            "代码",
+            "名称",
+            "最近上榜日",
+            "收盘价",
+            "涨跌幅",
+            "上榜次数",
+            "龙虎榜净买额",
+            "龙虎榜买入额",
+            "龙虎榜卖出额",
+            "龙虎榜总成交额",
+            "买方机构次数",
+            "卖方机构次数",
+            "机构买入净额",
+            "机构买入总额",
+            "机构卖出总额",
+            "近1个月涨跌幅",
+            "近3个月涨跌幅",
+            "近6个月涨跌幅",
+            "近1年涨跌幅",
+        ]
+    ]
+    temp_df["最近上榜日"] = pd.to_datetime(temp_df["最近上榜日"]).dt.date
+    return temp_df
+
+def parabolic_sar(new):
+    
+    #this is common accelerating factors for forex and commodity
+    #for equity, af for each step could be set to 0.01
+    initial_af=0.02
+    step_af=0.02
+    end_af=0.2
+    
+    
+    new['trend']=0
+    new['sar']=0.0
+    new['real sar']=0.0
+    new['ep']=0.0
+    new['af']=0.0
+
+    #initial values for recursive calculation
+    new['trend'][1]=1 if new['Close'][1]>new['Close'][0] else -1
+    new['sar'][1]=new['High'][0] if new['trend'][1]>0 else new['Low'][0]
+    new.at[1,'real sar']=new['sar'][1]
+    new['ep'][1]=new['High'][1] if new['trend'][1]>0 else new['Low'][1]
+    new['af'][1]=initial_af
+
+    #calculation
+    for i in range(2,len(new)):
+        
+        temp=new['sar'][i-1]+new['af'][i-1]*(new['ep'][i-1]-new['sar'][i-1])
+        if new['trend'][i-1]<0:
+            new.at[i,'sar']=max(temp,new['High'][i-1],new['High'][i-2])
+            temp=1 if new['sar'][i]<new['High'][i] else new['trend'][i-1]-1
+        else:
+            new.at[i,'sar']=min(temp,new['Low'][i-1],new['Low'][i-2])
+            temp=-1 if new['sar'][i]>new['Low'][i] else new['trend'][i-1]+1
+        new.at[i,'trend']=temp
+    
+        
+        if new['trend'][i]<0:
+            temp=min(new['Low'][i],new['ep'][i-1]) if new['trend'][i]!=-1 else new['Low'][i]
+        else:
+            temp=max(new['High'][i],new['ep'][i-1]) if new['trend'][i]!=1 else new['High'][i]
+        new.at[i,'ep']=temp
+    
+    
+        if np.abs(new['trend'][i])==1:
+            temp=new['ep'][i-1]
+            new.at[i,'af']=initial_af
+        else:
+            temp=new['sar'][i]
+            if new['ep'][i]==new['ep'][i-1]:
+                new.at[i,'af']=new['af'][i-1]
+            else:
+                new.at[i,'af']=min(end_af,new['af'][i-1]+step_af)
+        new.at[i,'real sar']=temp
+
+    last_value = new["real sar"].tolist()[-1] + new["af"].tolist()[-1]*(new["ep"].tolist()[-1]-new["real sar"].tolist()[-1])
+    sar_list = [i for i in new["real sar"]] + [last_value]
+    new["sar"] = sar_list[1:]
+    new["real sar"] = sar_list[1:]    
+    return new
+
+
+def signal_generation(df,method):
+    
+        new=method(df)
+
+        new['positions'],new['signals']=0,0
+        new['positions']=np.where(new['real sar']<new['Close'],1,0)
+        new['signals']=new['positions'].diff()
+        
+        return new
+
+def strategy():
+    today = datetime.datetime.now()
+    hm = str(today)[11:16]
+    wd = today.weekday()
+
+    if wd in (0,1,2,3,4) and ((hm >= '09:30' and hm < '12:00') or (hm >= '13:00' and hm < '16:00')):
+        today_str = str(today)[0:10].replace("-", "")
+        start_str = str(today - datetime.timedelta(days = 180))[0:10].replace("-", "")
+        df = stock_lhb_stock_statistic_em()
+        df = df.loc[df["上榜次数"]>=3,]
+        markdown_text = ""
+        for i in range(df.shape[0]):
+            name = df.loc[i, "名称"]
+            code = df.loc[i, "代码"]
+            times = df.loc[i, "上榜次数"]
+            dtdate = str(df.loc[i, "最近上榜日"])
+            try:
+                df_ = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_str, end_date=today_str, adjust="qfq")
+                #df_=ak.stock_zh_a_hist_min_em(symbol = code, period = "60", start_date=start_str, end_date=today_str, adjust="qfq")
+                rsi_value = RSI(df_["收盘"], N = 6)
+                k, d, j = KDJ(df_["收盘"], df_["最高"], df_["最低"])
+                df_rename = df_[["最高", "最低", "收盘"]]
+                df_rename.columns = ["High", "Low", "Close"]
+                new=signal_generation(df_rename,parabolic_sar)
+                signs = new["signals"].tolist()
+                realsar = new["real sar"].tolist()
+                if ((rsi_value[-1] <= 20) or (any(x == 1 for x in signs[-3:]) and any(abs(df_["收盘"].values[-1]/x-1) <= 0.03 for x in realsar[-3:]))) and not operator.contains(name, "ST"):
+                    markdown_text += str(i)+"、"+name +"上榜次数"+str(times)+"，最近一次上榜日期："+dtdate+"，收盘价："+str(round(list(df_["收盘"])[-1],2))+"，SAR："+str(round(list(new["real sar"])[-1],2))+"（"+str(round((list(df_["收盘"])[-1])/(list(new["real sar"])[-1])*100-100,2))+"%），RSI："+str(round(rsi_value[-1],2))+"，KDJ的J："+str(round(j[-1],2))+ "，可考虑建仓。\n"
+            except:
+                pass
+        if len(markdown_text):
+            send_markdown(markdown_text)
+        else:
+            pass
+            
+def main():
+    while True:
+        now = datetime.datetime.now()
+        # 检查是否是周一至周五
+        if now.weekday() < 5:
+            # 检查是否在工作时间范围内
+            if now.hour == 9 and now.minute >= 30 or (now.hour > 9 and now.hour < 16) or (now.hour == 16 and now.minute == 0):
+                # 执行你的脚本
+                strategy()
+        
+        # 计算下一个执行时间
+        next_run = now + datetime.timedelta(minutes=30)
+        # 如果下一个执行时间超过了当天的4点，就将执行时间调整到第二天的9:30
+        if next_run.hour >= 16:
+            next_run = next_run + datetime.timedelta(days=1)
+            next_run = next_run.replace(hour=9, minute=30)
+        # 计算当前时间到下一个执行时间的时间差
+        delta = next_run - now
+        # 等待下一个执行时间
+        time.sleep(delta.total_seconds())            
+
+
+if __name__ == "__main__":
+    main()
